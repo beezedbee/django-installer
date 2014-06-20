@@ -12,7 +12,7 @@
 #									-u APPLICATION_USER
 #									-f APPLICATION_FQDN
 #
-# Requirements	- Debian (might work on Ubuntu etc. not tested)
+# Requirements	- Debian or Ubuntu OS (Limited testing so far)
 #				- root access
 #
 # Caveats		- Very little error checking so far :-(
@@ -87,16 +87,23 @@ if [ -z "$DB_NAME" ] || [ -z "$DB_LOGIN" ] || [ -z "$WEBAPPS_ROOT" ] || [ -z "$A
 fi
 
 # first ensure the system is up to date
+echo "INFO: Install aptitude if required"
+if [ -z `which aptitude` ]; then
+	sudo apt-get install aptitude >/dev/null
+fi
+echo "INFO: Updating the base system"
 sudo aptitude update >/dev/null
 sudo aptitude upgrade >/dev/null
 
 # install database packages and generate user and database
+echo "INFO: Installing postgresql"
 install_packages postgresql postgresql-contrib
-echo Creating database user
+echo "INFO: Creating database user"
 sudo -u postgres createuser --no-superuser --no-createdb --no-createrole -P $DB_LOGIN
 sudo -u postgres createdb --owner $DB_LOGIN $DB_NAME
 
 # create application user and permission folders
+echo "INFO: Creating application user"
 if ! [ `id -u $APP_USER 2>/dev/null` ]; then
 	sudo groupadd --system $APP_USER >/dev/null
 	sudo useradd --system --gid $APP_USER --shell /bin/bash --home $WEBAPPS_ROOT/$APP_NAME $APP_USER >/dev/null
@@ -113,14 +120,19 @@ else
 fi
 
 # install django into a python virtual environment and initialise the project
+echo "INFO: Installing python virtual environment"
 install_packages python-virtualenv
-sudo -u $APP_USER --  bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; virtualenv .; source bin/activate; pip install django; django-admin.py startproject $APP_NAME" >/dev/null
+sudo -u $APP_USER -- bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; virtualenv ." >/dev/null
+echo "INFO: Installing django and creating the project"
+sudo -u $APP_USER -- bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; source bin/activate; pip install django; django-admin.py startproject $APP_NAME" >/dev/null
 
 # build and install the database components necessary for django
+echo "INFO: Installing psycopg2 and south"
 install_packages libpq-dev python-dev
 sudo -u $APP_USER --  bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; source bin/activate; pip install psycopg2 south" >/dev/null
 
 # build the django settings file to connect to the database and initialise it
+echo "INFO: Configuring django settings and initialising its database"
 SECRET_KEY=`grep -oP "SECRET_KEY\s+=\s+'\K.+(?=')" $WEBAPPS_ROOT/$APP_NAME/$APP_NAME/$APP_NAME/settings.py`
 read -s -p "Please provide the database user password again: " DB_PASSWORD
 echo
@@ -180,7 +192,8 @@ MEDIA_URL = '/media/'
 __DJANGO_SETTINGS__EOF__
 sudo -u $APP_USER --  bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; source bin/activate; python $APP_NAME/manage.py syncdb"
 
-# install gunicorn and build a script to start it 
+# install gunicorn and build a script to start it
+echo "INFO: Installing gunicorn"
 sudo -u $APP_USER --  bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; source bin/activate; pip install gunicorn" >/dev/null
 cat <<__GUNICORN_START_SCRIPT_EOF__ | sudo tee $WEBAPPS_ROOT/$APP_NAME/bin/gunicorn_start 1>/dev/null
 #!/bin/bash
@@ -215,9 +228,11 @@ sudo chown $APP_USER $WEBAPPS_ROOT/$APP_NAME/bin/gunicorn_start
 sudo chmod u+x $WEBAPPS_ROOT/$APP_NAME/bin/gunicorn_start
 
 # enable python to control the process name for clarity
+echo "INFO: Installing python set proctitle"
 sudo -u $APP_USER --  bash -c "cd $WEBAPPS_ROOT/$APP_NAME/; source bin/activate; pip install setproctitle" >/dev/null
 
 # install and configure supervisor, which will daemonise the gunicorn script
+echo "INFO: Installing supervisor"
 install_packages supervisor
 cat <<__SUPERVISOR_CONFIG_EOF__ | sudo tee /etc/supervisor/conf.d/$APP_NAME.conf 1>/dev/null
 [program:$APP_NAME]
@@ -232,12 +247,14 @@ sudo supervisorctl reread >/dev/null
 sudo supervisorctl update >/dev/null
 
 # create necessary paths for serving static content and ensure the default django admin CSS is available
+echo "INFO: Configuring filepaths"
 mkdir -p $WEBAPPS_ROOT/$APP_NAME/static
 mkdir -p $WEBAPPS_ROOT/$APP_NAME/media
 sudo chown $APP_USER $WEBAPPS_ROOT/$APP_NAME/static $WEBAPPS_ROOT/$APP_NAME/media
 sudo ln -s $WEBAPPS_ROOT/$APP_NAME/lib/python2.7/site-packages/django/contrib/admin/static/admin $WEBAPPS_ROOT/$APP_NAME/static/admin
 
 # install nginx and write a configuration file for the reverse proxy
+echo "INFO: Installing nginx"
 install_packages nginx
 cat <<__NGINX_SITE_CONFIG__EOF__ | sudo tee /etc/nginx/sites-available/$APP_NAME 1>/dev/null
 upstream ${APP_NAME}_app_server { 
@@ -285,9 +302,9 @@ server {
 __NGINX_SITE_CONFIG__EOF__
 
 # enable the site and start nginx
-if [ -f /etc/nginx/sites-enabled/default ]; then
-	sudo rm /etc/nginx/sites-enabled/default
-fi
-
+echo "INFO: Enabling the site"
+#if [ -f /etc/nginx/sites-enabled/default ]; then
+#	sudo rm /etc/nginx/sites-enabled/default
+#fi
 sudo ln -s /etc/nginx/sites-available/$APP_NAME /etc/nginx/sites-enabled/
 sudo service nginx restart >/dev/null
